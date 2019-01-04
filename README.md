@@ -1,4 +1,7 @@
 # iGUIDE manuscript analysis
+
+[![DOI](https://zenodo.org/badge/164138235.svg)](https://zenodo.org/badge/latestdoi/164138235)
+
 Analysis provided in the "iGUIDE: an improved pipeline for analyzing CRISPR cleavage specificity" manuscript.
 
 For an updated version of iGUIDE, please visit https://github.com/cnobles/iGUIDE.
