@@ -1,0 +1,1427 @@
+---
+title: 'iGUIDE: manuscript figures v10'
+author: "Christopher Nobles, Ph.D."
+date: "date: `r Sys.Date()`"
+output: 
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: false
+    fig_caption: true
+    df_print: default
+header-includes: 
+  - \usepackage{float}
+  - \usepackage{indentfirst}
+  - \usepackage{xcolor}
+  - \usepackage[labelformat=empty]{caption}
+  - \setlength{\defaultaddspace}{0em}
+  - \setlength{\parindent}{2em}
+fontsize: 10pt
+geometry: margin=0.5in
+---
+
+```{r setup, include=FALSE}
+# Packages ----
+packs <- c(
+  "BiocGenerics", "GenomicRanges", "Biostrings", "igraph", "Matrix", "gintools", 
+  "stats", "dplyr", "ggplot2", "scales", "reshape2", "pander", "magrittr",
+  "parallel", "ShortRead", "stringr", "data.table", "BSgenome", "gridExtra",
+  "rmarkdown", "hiAnnotator", "knitr", "kableExtra"
+)
+
+packs_loaded <- suppressMessages(
+  sapply(packs, require, character.only = TRUE)
+)
+
+if( !all(packs_loaded) ){
+  
+  print(
+    data.frame("R-Packages" = names(packs_loaded), "Loaded" = packs_loaded),
+    row.names = FALSE, right = FALSE
+  )
+  
+  stop("Check dependancies.")
+  
+}
+
+rm(packs, packs_loaded)
+
+# Options ----
+options(
+  stringsAsFactors = FALSE, 
+  scipen = 99, 
+  knitr.table.format = "latex"
+)
+
+knitr::opts_chunk$set(
+  echo = FALSE,
+  comment = "",
+  echo = FALSE,
+  warning = FALSE,
+  error = TRUE,
+  message = FALSE,
+  cache = FALSE,
+  results = "asis",
+  fig.path = "/home/nobles/iGUIDE_manuscript_analysis/figures/",
+  fig.align = "center",
+  dpi = 300,
+  dev = "pdf",
+  fig.pos = "H"
+)
+
+# Directories ----
+work_dir <- "/home/nobles/iGUIDE_manuscript_analysis"
+out_dir <- "/home/nobles/iGUIDE_manuscript_analysis"
+meta_dir <- "/home/nobles/iGUIDE_manuscript_analysis/sampleInfo"
+odn_neg_dir <- "/home/nobles/iGUIDE_manuscript_analysis/odn_neg_data"
+setwd(work_dir)
+source(file.path(work_dir, "post_process_support.R"))
+
+# Specific data and references ----
+sgRNA <- list(
+  "B2M" = "GAGTAGCGCGAGCACAGCTANGG",
+  "TRAC5" = "TGTGCTAGACATGAGGTCTANGG",
+  "VEGFAs2" = "GACCCCCTCCACCCCGCCTCNGG",
+  "VEGFAs3" = "GGTGAGTGAGTGTGTGCGTGNGG"
+)
+
+on_target_sites <- c(
+  "B2M" = "chr15:-:44711569",
+  "TRAC5" = "chr14:+:22547664",
+  "VEGFAs2" = "chr6:-:43770825",
+  "VEGFAs3" = "chr6:+:43769733"
+)
+
+gene_targets <- c(
+  "B2M" = "B2M", 
+  "TRAC5" = "TRAC", 
+  "VEGFAs2" = "VEGFA", 
+  "VEGFAs3" = "VEGFA"
+)
+
+hg38 <- BSgenome.Hsapiens.UCSC.hg38::BSgenome.Hsapiens.UCSC.hg38
+config <- yaml::yaml.load_file(file.path(work_dir, "iGUIDE_Sets.config.yml"))
+
+ref_genes <- loadRefFiles(
+  config$refGenes, type = "GRanges", freeze = config$Ref_Genome)
+onco_genes <- loadRefFiles(
+  config$oncoGeneList, type = "gene.list", freeze = config$Ref_Genome)
+bad_actors <- loadRefFiles(
+  config$specialGeneList, type = "gene.list", freeze = config$Ref_Genome)
+
+
+fragile_regions <- readRDS("util_files/fragileRegions.hg38.rds")
+CFR <- fragile_regions[fragile_regions$regionType == "aCFR"]
+
+upstream_dist <- 100L
+downstream_dist <- 30L
+pileup_min <- 3L
+
+# General sample information ---------------------------------------------------
+proc_sets <- c("Set0", "Set1", "Set2", "Set3", "Set8")
+proc_sets <- structure(proc_sets, names = proc_sets)
+
+sample_info_dir <- file.path(work_dir, "sampleInfo")
+sample_info <- bind_rows(lapply(proc_sets, function(set){
+      read.csv(file.path(
+        sample_info_dir, paste0("iGUIDE_", set, ".sampleInfo.csv"))) }), 
+    .id = "set") %>%
+  mutate(
+    neg_ort = ifelse(
+      set == "Set8", TRUE, str_detect(sampleName, "neg")),
+    specimen = str_extract(sampleName, "[\\w]+")) %>%
+  filter(neg_ort, !specimen %in% c("GSSP0003", "GSSP0007")) %>%
+  select(
+    set, specimen, sampleName, barcode1, barcode2, R2Lead, R2LeadODN, R1Over)
+
+specimen_info <- read.csv(file.path(sample_info_dir, "iGUIDE_Set.supp.csv")) %>%
+  filter(specimen %in% sample_info$specimen)
+
+gsp2_pos <- "CCTCTCTATGGGCAGTCGGTGATACATATGACAACTCAATTAAAC"
+gsp2_pos_13 <- substr(gsp2_pos, nchar(gsp2_pos)-13+1, nchar(gsp2_pos))
+gsp2_neg <- "CCTCTCTATGGGCAGTCGGTGATTTGAGTTGTCATATGTTAATAACGGTAT"
+gsp2_neg_13 <- substr(gsp2_neg, nchar(gsp2_neg)-13+1, nchar(gsp2_neg))
+
+# Custom plot theme ------------------------------------------------------------
+custom_theme <- theme_bw() +
+  theme(
+    panel.background = element_blank(),
+    panel.grid = element_blank(),
+    panel.border = element_blank(),
+    strip.background = element_blank(),
+    strip.text = element_text(size = 7, color = "black", face = "bold"),
+    axis.text = element_text(size = 8, color = "black"),
+    axis.title = element_text(size = 7, color = "black", face = "bold"),
+    axis.line = element_line(color = "black"),
+    legend.position = "bottom",
+    legend.title = element_text(size = 10, color = "black", face = "bold"),
+    legend.text = element_text(size = 10, color = "black", face = "bold"),
+    legend.key.size = unit(3, "mm"),
+    legend.box.spacing = unit(3, "mm"),
+    title = element_text(size = 7, color = "black", face = "bold"))
+
+ggplot2::theme_set(custom_theme)
+
+# Additional functions ---------------------------------------------------------
+print_alignment <- function(x, y, match.sym = ".", 
+                            pad.str.side = "left", pad.name.side = "left"){
+  # Input features
+  is_x_named <- !is.null(names(x))
+  is_y_named <- !is.null(names(y))
+  include_align_syms <- nchar(match.sym) > 0
+  
+  # Check lengths and pad if needed
+  if(nchar(x) != nchar(y)){
+    max_len <- max(nchar(x), nchar(y))
+    x <- stringr::str_pad(x, max_len, side = pad.str.side, pad = " ")
+    y <- stringr::str_pad(y, max_len, side = pad.str.side, pad = " ")
+  }
+  
+  # Split and match x and y
+  x_split <- unlist(stringr::str_split(x, ""))
+  y_split <- unlist(stringr::str_split(y, ""))
+  y_mod <- paste(ifelse(y_split == x_split, match.sym, y_split), collapse = "")
+  
+  # Append names if present
+  if(is_x_named | is_y_named){
+    x_name <- names(x)
+    y_name <- names(y)
+    max_name <- max(nchar(x_name), nchar(y_name))
+    x_name <- stringr::str_pad(
+      x_name, max_name, side = pad.name.side, pad = " ")
+    y_name <- stringr::str_pad(
+      y_name, max_name, side = pad.name.side, pad = " ")
+    match_name <- paste(rep(" ", max_name), collapse = "")
+    x <- paste0(x_name, ":", x)
+    #match_str <- paste0(match_name, " ", match_str)
+    y_mod <- paste0(y_name, ":", y_mod)
+  }
+  
+  # Return in a single string
+  return(paste0(x, "\n", y_mod))
+}
+
+plot_roc <- function(logic, data, group, 
+                     ties.method = "average", na.rm = FALSE, rdm.seed = 714){
+  stopifnot(is.logical(logic))
+  stopifnot(is.numeric(data)) 
+
+  if(na.rm){
+    na_idx <- is.na(data)
+    logic <- logic[!na_idx]
+    data <- data[!na_idx]
+    group <- group[!na_idx]
+  }
+
+  grps <- structure(unique(group), names = unique(group))
+
+  roc_data <- bind_rows(lapply(grps, function(grp){
+    set.seed(rdm.seed)
+    is_grp <- group == grp
+    d <- data[is_grp]
+    log <- logic[is_grp]
+    x <- d[!log]
+    y <- d[log]
+    m <- sum(!log)
+    n <- sum(log)
+    x.ranks <- rank(x, ties.method = ties.method)
+    y.ranks <- rank(y, ties.method = ties.method)
+    is.x <- rep( c(TRUE,FALSE), c( m, n ))
+    xy.ord <- is.x[order( 1/rank(c(x,y), ties.method = ties.method) )]
+    xy.mag <- ifelse(xy.ord, 1/m, 1/n)
+    data.frame(
+        x.mag = c(0, cumsum(ifelse(xy.ord, xy.mag, 0))),
+        y.mag = c(0, cumsum(ifelse(xy.ord, 0, xy.mag)))) %>%
+      group_by(y.mag) %>%
+      mutate(auc.i = ifelse(
+        (max(x.mag) - min(x.mag)) > 0, 
+        (max(x.mag) - min(x.mag)) * y.mag / n(), 0)) %>%
+      ungroup() %>%
+      as.data.frame() }), .id = "grp") %>%
+    mutate(grp = factor(grp, unique(group)))
+
+  plot_auc_data <- roc_data %>%
+    group_by(grp) %>%
+    summarise(auc = sum(auc.i)) %>%
+    ungroup() %>% as.data.frame()
+
+  # Calculate theta
+  theta_data <- bind_rows(lapply(grps, function(grp){
+    set.seed(rdm.seed)
+    is_grp <- group == grp
+    d <- data[is_grp]
+    log <- logic[is_grp]
+    x <- d[!log]
+    y <- d[log]
+    m <- sum(!log)
+    n <- sum(log)
+    x.ranks <- rank(x, ties.method = ties.method)
+    y.ranks <- rank(y, ties.method = ties.method)
+    is.x <- rep( c(TRUE,FALSE), c( m, n ))
+    
+    xy.ranks <- split(rank(c(x,y), ties.method = ties.method), is.x)
+    V.10 <- 1 - ( (xy.ranks[[2]] - x.ranks) / n )
+    V.01 <- (xy.ranks[[1]] - y.ranks) / m 
+    theta.hat <- mean(V.10)
+    
+    # Not sure the varience is calculated right as the hotROCs:::ROC.DDCP does
+    # something a little different with multiple tested variables, maybe a 
+    # correction for multiple comparisons that isn't included here.
+    S.10 <- var(V.10)
+    S.01 <- var(V.01)
+    S <- S.10/m + S.01/n
+    
+    res <- data.frame(theta = theta.hat, var = S) }), .id = "grp")
+  
+  ggplot(roc_data, aes(x = x.mag, y = y.mag)) + 
+    geom_abline(slope = 1, intercept = 0, color = "grey50") +
+    geom_ribbon(aes(ymin = 0, ymax = y.mag, fill = grp), alpha = 0.1) + 
+    geom_line(aes(color = grp)) + 
+    scale_color_brewer(type = "qual", palette = "Set1") +
+    scale_fill_brewer(type = "qual", palette = "Set1") +
+    labs(x = "False Positive Rate", y = "True Positive Rate")
+}
+
+match_guide_sequence <- function(sequence, gRNA, PAM = "NGG", 
+                                 PAM.mismatch = 0L, edge.dist = 2L,
+                                 output = "score", gap.opening = 0L, 
+                                 gap.extension = 1L){
+  sequence <- DNAStringSet(sequence)
+  gRNA_seq <- stringr::str_replace(as.character(gRNA), "NGG$", "")
+  
+  # Match PAM sequence
+  pam_match_sens <- unlist(vmatchPattern(
+    PAM, sequence, 
+    fixed = FALSE, max.mismatch = PAM.mismatch))
+  pam_match_anti <- unlist(vmatchPattern(
+    PAM, reverseComplement(sequence), 
+    fixed = FALSE, max.mismatch = PAM.mismatch))
+  
+  # Filter matches for potential full matches
+  pam_match_sens <- pam_match_sens[
+    start(pam_match_sens) >= (nchar(gRNA_seq)+1+edge.dist) & 
+      end(pam_match_sens) <= width(sequence)]
+  pam_match_anti <- pam_match_anti[
+    start(pam_match_anti) >= (nchar(gRNA_seq)+1+edge.dist) & 
+      end(pam_match_anti) <= width(sequence)]
+  
+  # Flank the regions to get correct alignment ranges
+  pam_match_sens <- flank(pam_match_sens, (nchar(gRNA_seq) + edge.dist))
+  pam_match_anti <- flank(pam_match_anti, (nchar(gRNA_seq) + edge.dist))
+  
+  # Isolate sequences from PAM matched locations
+  seqs_sens <- substr(
+    rep(sequence, length(pam_match_sens)), 
+    start(pam_match_sens), 
+    end(pam_match_sens))
+  seqs_anti <- substr(
+    rep(reverseComplement(sequence), length(pam_match_anti)), 
+    start(pam_match_anti), 
+    end(pam_match_anti))
+  potential_seqs <- c(seqs_sens, seqs_anti)
+  
+  # Match gRNA against PAM identified locations
+  scores <- pairwiseAlignment(
+    potential_seqs, gRNA_seq, 
+    type = "overlap", 
+    gapOpening = gap.opening, gapExtension = gap.extension, 
+    substitutionMatrix = banmat(), scoreOnly = TRUE)
+  
+  top_algn <- pairwiseAlignment(
+    potential_seqs[which(scores == max(scores))], gRNA_seq, 
+    type = "overlap", 
+    gapOpening = gap.opening, gapExtension = gap.extension, 
+    substitutionMatrix = banmat(), scoreOnly = TRUE)
+  
+  if(output == "score"){
+    return(max(scores))
+  }else if(output == "align"){
+    return(top_algn[1])
+  }else if(output == "full"){
+    return(list(score = max(scores), align = top_algn[1]))
+  }
+}
+
+find_genomic_guide_sites <- function(gRNA, ref, max.mismatch = 6L){
+  gRNA <- as.character(gRNA)
+  stopifnot(nchar(gRNA) == 23)
+  sg_seq <- substr(gRNA, start = 1, stop = 20)
+
+  gen_algns <- vmatchPattern(sg_seq, ref, max.mismatch = max.mismatch)
+
+  # Filter alignments
+  match_chr <- paste0("chr", c(1:22, "X", "Y", "M"))
+  gen_algns <- gen_algns[seqnames(gen_algns) %in% match_chr]
+  
+  # Add PAM range
+  gen_algns <- gen_algns %>%
+    flank(4, start = FALSE) %>%
+    flank(-1, start = FALSE) %>%
+    flank(23)
+
+  gRNA_seqs <- getSeq(hg38, gen_algns)
+
+  has_PAM <- stringr::str_detect(as.character(gRNA_seqs), ".GG$")
+
+  gen_algns <- gen_algns[has_PAM]
+  mcols(gen_algns)$seq <- gRNA_seqs[has_PAM]
+
+  seq_summary <- as.data.frame(gen_algns) %>%
+    group_by(seq) %>%
+    summarise(count = n()) %>%
+    ungroup()
+  
+  algn_mat <- stringr::str_split(seq_summary$seq, "", simplify = TRUE)
+  split_gRNA <- unlist(strsplit(gRNA, ""))
+  algn_mat <- sapply(
+    seq_along(split_gRNA), function(i){
+      ifelse(algn_mat[,i] == split_gRNA[i], ".", algn_mat[,i]) })
+  str_dev <- stringr::str_c(t(algn_mat), collapse = "")
+  str_dev <- unlist(strsplit(str_dev, split = "(?<=.{23})", perl = TRUE))
+  
+  seq_summary <- seq_summary %>%
+    mutate(
+      seq.dev = str_dev,
+      mismatch = 23 - stringr::str_count(seq.dev, fixed(".")) - 1) %>%
+  arrange(mismatch, desc(count))
+
+ return(list(summary = seq_summary, ranges = gen_algns))
+}
+
+div_seq <- function(seqs, ref, match.chr = "."){
+  seqs <- as.character(seqs)
+  ref <- as.character(ref)
+  
+  stopifnot(all(nchar(seqs) == nchar(ref)))
+  
+  seq_mat <- stringr::str_split(seqs, pattern = "", simplify = TRUE)
+  ref_splt <- unlist(stringr::str_split(ref, pattern = ""))
+  div_mat <- sapply(seq_along(ref_splt), function(i){
+    ifelse(seq_mat[,i] == ref_splt[i], match.chr, seq_mat[,i]) })
+  div_str <- stringr::str_c(t(div_mat), collapse = "")
+  unlist(strsplit(
+    div_str, split = paste0("(?<=.{", nchar(ref), "})"), perl = TRUE))
+}
+
+seq_diverge_plot <- function(df, ref, nuc.col = NULL, padding = 4, 
+                             text.size = 2, convert.seq = TRUE, 
+                             force.sq = FALSE, font.family = "Courier",
+                             font.face = "bold", fill = "left"){
+  if(is.null(nuc.col)){ nuc.col <- names(df)[1] }
+  seqs <- dplyr::pull(df, var = match(nuc.col, names(df)))
+  if(!all(nchar(as.character(seqs)) == nchar(ref))){
+    fill_idx <- which(nchar(seqs) != nchar(ref))
+    fill_width <- nchar(ref) - nchar(seqs)[fill_idx]
+    if(fill == "left"){
+      seqs[fill_idx] <- sapply(seq_along(fill_idx), function(i){
+        paste0(
+          paste(rep("N", fill_width[i]), collapse = ""), seqs[fill_idx[i]])
+      })
+    }else if(fill == "right"){
+      seqs[fill_idx] <- sapply(seq_along(fill_idx), function(i){
+        paste0(
+          seqs[fill_idx[i]], paste(rep("N", fill_width[i]), collapse = ""))
+      })
+    }else{
+      stop("fill parameter must be either left or right.")
+    }
+  }
+  nuc_len <- nchar(ref)
+  
+  # Convert seqs
+  if(convert.seq) seqs <- div_seq(seqs, ref)
+  
+  # Nucleotide color
+  nucleotide_levels <- c("A", "T", "G", "C", ".", "N")
+  nucleotide_colors <- RColorBrewer::brewer.pal(6, "Set1")
+  nucleotide_colors <- c(nucleotide_colors[c(1,3,6,2)], "#FFFFFF", "#DCDCDC")
+  names(nucleotide_colors) <- nucleotide_levels
+  
+  # Sequence matrix
+  N_pos <- which(unlist(strsplit(ref, "")) == "N")
+  nuc_melt <- stringr::str_split(
+    c(ref, paste(rep(" ", nuc_len), collapse = ""), seqs), 
+    pattern = "", simplify = TRUE) %>%
+    as.data.frame() %>%
+    mutate(pos.y = -(1:n())) %>%
+    melt(id.vars = "pos.y") %>%
+    mutate(
+      pos.x = as.numeric(stringr::str_extract(variable, "[0-9]+$")),
+      color = nucleotide_colors[value],      
+      color = ifelse(
+        pos.x %in% N_pos, rep(nucleotide_colors["N"], n()), color),
+      color = ifelse(value == " ", "#FFFFFF", color)) %>%
+    select(pos.x, pos.y, value, color)
+  
+  # Format remaining cols of input
+  sup_df <- df[,-match(nuc.col, names(df))] %>%
+    mutate_all(format, big.mark = ",", justify = "centre")
+  
+  sup_names <- names(sup_df)
+  
+  sup_df <- bind_rows(
+    as.data.frame(
+      t(matrix(
+        c(names(sup_df), rep(" ", ncol(sup_df))), 
+        ncol = 2, dimnames = list(names(sup_df))))),
+    sup_df) %>%
+    mutate_all(format, justify = "right") %>%
+    mutate(pos.y = -(1:n()))
+  
+  sup_melt <- melt(sup_df, id.vars = "pos.y") %>%
+    mutate(
+      pos.x = nuc_len + (match(variable, names(sup_df))) * padding,
+      color = "#FFFFFF") %>%
+    select(pos.x, pos.y, value, color)
+  
+  plot_melt <- bind_rows(nuc_melt, sup_melt)
+  
+  plot_colors <- structure(
+    unique(plot_melt$color), names = unique(plot_melt$color))
+
+  p <- ggplot(plot_melt, aes(x = pos.x, y = pos.y)) +
+    geom_tile(aes(fill = color)) +
+    geom_text(
+      aes(label = value), size = text.size, 
+      family = font.family, fontface = font.face) +
+    scale_fill_manual(values = plot_colors) +
+    theme(
+      axis.line = element_blank(),
+      axis.text = element_blank(),
+      axis.ticks = element_blank(),
+      axis.title = element_blank(),
+      legend.position = "none")
+  
+  if(force.sq){
+    p <- p + theme(aspect.ratio = with(plot_melt, max(abs(pos.y))/max(pos.x)))
+  }
+  
+  p
+}
+
+is_stacked <- function(gr){
+  # Generate graph based on starts
+  starts_gr <- flank(gr, width = -1, start = TRUE)
+  start_hits <- findOverlaps(starts_gr, drop.self = TRUE)
+  start_graph <- igraph::simplify(igraph::graph_from_data_frame(
+    as.data.frame(start_hits), directed = FALSE, vertices = seq_along(gr)))
+
+  # Generate graph based on ends 
+  ends_gr <- flank(gr, width = -1, start = FALSE)
+  end_hits <- findOverlaps(ends_gr, drop.self = TRUE)
+  end_graph <- igraph::simplify(igraph::graph_from_data_frame(
+    as.data.frame(end_hits), directed = FALSE, vertices = seq_along(gr)))
+
+  # Merge graphs
+  merged_el <- dplyr::bind_rows(list(
+      "start" = as.data.frame(igraph::get.edgelist(start_graph)),
+      "end" = as.data.frame(igraph::get.edgelist(end_graph))),
+      .id = "type") %>%
+    dplyr::select(V1, V2, type)
+  merged_graph <- igraph::graph_from_data_frame(
+    merged_el, directed = FALSE, vertices = as.character(seq_along(gr)))
+  
+  # Identify stacked clusters
+  node_data <- data.frame(
+      node = as.character(seq_along(gr)),
+      clus.id = as.character(igraph::clusters(merged_graph)$membership))
+  clus_data <- merged_el %>%
+    left_join(node_data, by = c("V1" = "node")) %>%
+    group_by(clus.id) %>%
+    summarise(stacked = all(c("start", "end") %in% unique(type))) %>%
+    ungroup()
+  node_data <- left_join(node_data, clus_data, by = "clus.id") %>%
+    mutate(stacked = ifelse(is.na(stacked), FALSE, stacked))
+  
+  # Return logical vector
+  return(structure(node_data$stacked, names = as.numeric(node_data$node)))
+}
+
+# Analysis data ----------------------------------------------------------------
+if(file.exists(file.path(out_dir, "manuscript_fig_data.archive.RData"))){
+  load(file.path(out_dir, "manuscript_fig_data.archive.RData"))
+}else{
+  ### Std processed data
+  sets <- paste0("iGUIDE_", proc_sets)
+  std_proc <- lapply(
+    sets, 
+    function(set){
+      readRDS(
+        file = file.path(
+          work_dir, "analysis", paste0("edited_sites.", set, ".rds")
+        )
+      )
+    }
+  )
+  
+  algnmt_names <- names(std_proc[[1]]$algnmts)
+  
+  probable_names <- names(std_proc[[1]]$probable_algns)
+  
+  ### Annotate sets
+  names(std_proc) <- sets
+  
+  all_algns <- bind_rows(lapply(std_proc, "[[", "algnmts"), .id = "set") %>%
+    left_join(specimen_info, by = "specimen") %>%
+    filter(
+      seqnames %in% c(paste0("chr", c(1:22, "X", "Y", "M"))),
+      sampleName %in% sample_info$sampleName
+    )
+
+  #### Rarefied dataset for sensitivity / specificity / enrichment analysis
+  rare_algns <- all_algns 
+  rare_limit <- 2500 # 2500 with on_target and 1500 without
+  set.seed(714)
+  rare_algns <- bind_rows(lapply(
+    split(rare_algns, rare_algns$specimen), 
+    function(df){
+      if(nrow(df) <= rare_limit){
+        return(df)
+      }else{
+        return(df[sample(nrow(df), size = rare_limit, replace = FALSE),])
+      }
+    }
+  ))
+
+  rare_algns <- rare_algns %>%
+    group_by(specimen) %>%
+    mutate(
+      clus.id = pileupCluster(
+        GRanges(seqnames, IRanges(start, end), strand))$clusID,
+      pair.id = identifyPairedAlgnmts(
+        GRanges(seqnames, IRanges(start, end), strand), 
+        maxgap = 2*upstream_dist, maxovlp = 20L)) %>%
+    group_by(specimen, clus.id) %>%
+    mutate(
+      is.pileup = n() > 1,
+      is.paired = !is.na(pair.id),
+      is.matched = guideRNA.match != "No_valid_match") %>%
+    group_by(specimen) %>%
+    mutate(
+      type.pile = ifelse(
+        is.pileup & is.matched, "TP", 
+        ifelse(
+          is.pileup & !is.matched, "FP", 
+          ifelse(!is.pileup & is.matched, "FN", "TN"))),
+      type.pair = ifelse(
+        is.paired & is.matched, "TP", 
+        ifelse(
+          is.paired & !is.matched, "FP", 
+          ifelse(!is.paired & is.matched, "FN", "TN"))),
+      type.both = ifelse(
+        is.pileup & is.paired & is.matched, "TP", 
+        ifelse(
+          is.pileup & is.paired & !is.matched, "FP", 
+          ifelse(!is.pileup & !is.paired & is.matched, "FN", "TN"))),
+      type.pile = factor(type.pile, levels = c("TP", "FP", "FN", "TN")),
+      type.pair = factor(type.pair, levels = c("TP", "FP", "FN", "TN")),
+      type.both = factor(type.pair, levels = c("TP", "FP", "FN", "TN")))
+
+  all_algns <- all_algns %>%
+    group_by(RNP, gRNA, dsODN) %>%
+    mutate(
+      clus.id = pileupCluster(
+        GRanges(seqnames, IRanges(start, end), strand))$clusID,
+      pair.id = identifyPairedAlgnmts(
+        GRanges(seqnames, IRanges(start, end), strand), 
+        maxgap = 2*upstream_dist, maxovlp = 20L)) %>%
+    ungroup()
+
+  # Pileup regions identified
+  pileup_regions <- all_algns %>%
+    group_by(RNP, gRNA, dsODN, clus.id) %>%
+    filter(n() >= pileup_min) %>%
+    summarise(
+      seqnames = unique(seqnames),
+      start = min(start), end = max(end), strand = unique(strand), 
+      width = end - start, specimens = n_distinct(specimen), 
+      algns = n(), umitag = sum(umitag), count = sum(count), 
+      paired = any(!is.na(pair.id))) %>%
+    ungroup() %>% as.data.frame() %>%
+    mutate(
+      on.off.target = ifelse(
+        seqnames == str_extract(
+          on_target_sites[gRNA], "[\\w]+"),
+        ifelse(
+          start <= as.numeric(
+            str_extract(on_target_sites[gRNA], "[\\w]+$")),
+          ifelse(end >= as.numeric(
+            str_extract(on_target_sites[gRNA], "[\\w]+$")),
+            "On-target", "Off-target"), "Off-target"), "Off-target"),
+      gene_id = assignGeneID(
+        seqnames, ifelse(strand == "+", start, end), reference = hg38, 
+        ref.genes = ref_genes, onco.genes = onco_genes, 
+        special.genes = bad_actors)) %>%
+    arrange(desc(algns))
+  
+# Paired regions identified
+  paired_algns <- all_algns[!is.na(all_algns$pair.id),]
+
+  paired_regions <- paired_algns %>%
+    group_by(RNP, gRNA, dsODN, pair.id, strand) %>%
+    mutate(pos = ifelse(strand == "+", min(start), max(end))) %>%
+    ungroup() %>% 
+    group_by(RNP, gRNA, dsODN, pair.id) %>%
+    summarise(
+      seqnames = unique(seqnames),
+      start = min(pos), end = max(pos), mid = start + round((end-start)/2),
+      strand = "*", width = end - start, specimens = n_distinct(specimen), 
+      algns = n(), umitag = sum(umitag), count = sum(count)) %>%
+    ungroup() %>% as.data.frame() %>%
+    mutate(
+      on.off.target = ifelse(
+        seqnames == str_extract(
+          on_target_sites[gRNA], "[\\w]+"),
+        ifelse(
+          start <= as.numeric(
+            str_extract(on_target_sites[gRNA], "[\\w]+$")),
+          ifelse(end >= as.numeric(
+            str_extract(on_target_sites[gRNA], "[\\w]+$")),
+            "On-target", "Off-target"), "Off-target"), "Off-target"),
+      gene_id = assignGeneID(
+        seqnames, mid, reference = hg38, 
+        ref.genes = ref_genes, onco.genes = onco_genes, 
+        special.genes = bad_actors)) %>%
+    arrange(desc(algns))
+
+  # ODN negative samples -------------------------------------------------------
+  IND_runs <- c(
+    "170324_B3DY7", "170327_B23R9", "170411_G18EK", "170522_B8LLN", 
+    "170804_BCC5P", "170812_BBBV9", "170907_BDHC9")
+  odn_neg_sets <- paste0("GUIDEseq_", IND_runs)
+  
+  ind_proc <- lapply(
+    odn_neg_sets, 
+    function(set){
+      x <- readRDS(
+        file = file.path(
+          odn_neg_dir, paste0("edited_sites.", set, ".rds"))) 
+      x$algnmts 
+    }
+  )
+  
+  add_supp_data <- lapply(
+    structure(odn_neg_sets, names = IND_runs), 
+    function(set){
+      read.csv(file = file.path(meta_dir, paste0(set, ".supp.csv"))) 
+    }
+  )
+  
+  add_specimen_info <- bind_rows(add_supp_data, .id = "set") %>% distinct()
+  
+  odn_neg_specimens <- lapply(add_supp_data, function(x){
+    x %>% filter(dsODN == "Mock") %$% specimen })
+  
+  odn_neg_proc <- mapply(function(proc, specs){
+      proc %>% filter(specimen %in% specs) },
+    proc = ind_proc, specs = odn_neg_specimens, SIMPLIFY = FALSE)
+  
+  names(odn_neg_proc) <- IND_runs
+
+  eval_odn_neg_algns <- all_algns %>%
+    filter(dsODN == "Mock") %>% 
+    select(-clus.id, -pair.id)
+    
+  odn_neg_algns <- bind_rows(odn_neg_proc, .id = "set") %>%
+    left_join(add_specimen_info, by = c("set", "specimen")) %>%
+    bind_rows(eval_odn_neg_algns) %>%
+    filter(seqnames %in% c(paste0("chr", c(1:22, "X", "Y", "M")))) %>%
+    mutate(
+      ort = ifelse(stringr::str_detect(sampleName, "pos"), "pos", "neg"),
+      upstream.seq = as.character(getSeq(
+        hg38, flank(
+          GRanges(seqnames, IRanges(start, end), strand), 
+          width = 13, start = TRUE))),
+      upstream.score = ifelse(
+        ort == "pos", 
+        pairwiseAlignment(
+          upstream.seq, gsp2_pos_13, type = "global", scoreOnly = TRUE,
+          substitutionMatrix = banmat()),
+        pairwiseAlignment(
+          upstream.seq, gsp2_neg_13, type = "global", scoreOnly = TRUE,
+          substitutionMatrix = banmat())))
+
+  odn_neg_summary <- odn_neg_algns %>%
+    group_by(set, ort, specimen, sampleName) %>%
+    summarise(
+      count = sum(count), umitag = sum(umitag), algns = sum(contrib),
+      mean.upscore = mean(upstream.score))
+  
+  # Mispriming and random sites ------------------------------------------------
+  pot_mis <- all_algns %>% 
+    mutate(std.id = {
+      incorp <- flank(
+        GRanges(seqnames, IRanges(start, end), strand), -1, start = TRUE)
+      red_inc <- reduce(incorp, min.gapwidth = 1L, with.revmap = TRUE)
+      data.frame(
+          idx = unlist(red_inc$revmap),
+          ids = Rle(seq_along(red_inc), lengths(red_inc$revmap))) %>%
+        arrange(idx) %$%
+        ids })%>%
+    group_by(std.id) %>%
+    filter(
+      length(unique(dsODN)) == 1,
+      !edit.site %in% on_target_sites) %>%
+    ungroup() %>%
+    mutate(position = ifelse(strand == "+", start, end)) %>%
+    group_by(RNP, gRNA, dsODN, specimen, std.id, seqnames, position, strand) %>%
+    summarise(
+      sample.cnt = n_distinct(sampleName), 
+      frag.cnt = sum(contrib),
+      umitag.cnt = sum(umitag), 
+      read.cnt = sum(count),
+      guideRNA.match = paste(unique(guideRNA.match), collapse = ";")) %>%
+    ungroup() %>%
+    mutate(
+      upstream.seq = as.character(getSeq(
+        hg38, flank(
+          GRanges(seqnames, IRanges(start = position, width = 1), strand), 
+          13, start = TRUE))),
+      upstream.score = pairwiseAlignment(
+        upstream.seq, gsp2_neg_13, type = "global", scoreOnly = TRUE,
+        substitutionMatrix = banmat())) %>%
+    filter(!stringr::str_detect(upstream.seq, "N"))
+
+  num_random_sites <- distinct(pot_mis, gRNA, std.id) %>%
+    group_by(gRNA) %>% 
+    summarise(cnt = n()) %$% 
+    max(cnt)
+
+  random_sites <- selectRandomSites(
+    num = num_random_sites, ref.genome = hg38, rnd.seed = 714
+  )
+  
+  random_sites$upstream.seq <- as.character(getSeq(
+    hg38, flank(random_sites, 13, start = TRUE)
+  ))
+  
+  random_sites <- random_sites[
+    !stringr::str_detect(random_sites$upstream.seq, "N")
+  ]
+  
+  random_sites$upstream.score <- pairwiseAlignment(
+    random_sites$upstream.seq, gsp2_neg_13, type = "global", scoreOnly = TRUE,
+    substitutionMatrix = banmat()
+  )
+  
+  # Identify potential guideRNA editing sites ----------------------------------
+  gen_loci <- lapply(
+    sgRNA, find_genomic_guide_sites, ref = hg38, max.mismatch = 5L
+  )
+
+  mcols(gen_loci$B2M$ranges) <- left_join(
+    as.data.frame(mcols(gen_loci$B2M$ranges)), 
+    gen_loci$B2M$summary, 
+    by = "seq"
+  )
+
+  mcols(gen_loci$TRAC5$ranges) <- left_join(
+    as.data.frame(mcols(gen_loci$TRAC5$ranges)), 
+    gen_loci$TRAC5$summary, 
+    by = "seq"
+  )
+  
+  mcols(gen_loci$VEGFAs2$ranges) <- left_join(
+    as.data.frame(mcols(gen_loci$VEGFAs2$ranges)), 
+    gen_loci$VEGFAs2$summary, 
+    by = "seq"
+  )
+  
+  mcols(gen_loci$VEGFAs3$ranges) <- left_join(
+    as.data.frame(mcols(gen_loci$VEGFAs3$ranges)), 
+    gen_loci$VEGFAs3$summary, 
+    by = "seq"
+  )
+
+  split_algns <- all_algns %>%
+    filter(RNP == "Cas9", gRNA != "Mock", dsODN %in% c("Gs", "iG")) %>%
+    mutate(grp = paste0(gRNA, ":", dsODN)) %>%
+    makeGRangesFromDataFrame(keep.extra.columns = TRUE) %>%
+    split(.$grp)
+  
+  gen_loci_summary <- bind_rows(lapply(split_algns, function(x){
+      y <- gen_loci[[unique(x$gRNA)]]$ranges
+      y$detect <- 0
+      hits <- subjectHits(
+        findOverlaps(flank(x, upstream_dist), y, ignore.strand = TRUE))
+      y[as.numeric(names(table(hits)))]$detect <- table(hits)
+      as.data.frame(y) }), .id = "grp") %>%
+    group_by(grp, seq, seq.dev, mismatch) %>%
+    summarise(count = n(), detect = sum(detect)) %>%
+    ungroup() %>%
+    tidyr::separate(grp, into = c("gRNA", "dsODN"), sep = ":") %>%
+    group_by(gRNA, seq, seq.dev, count, mismatch) %>%
+    summarise(
+      Gs = detect[which(dsODN == "Gs")], 
+      iG = detect[which(dsODN == "iG")]) %>%
+    arrange(mismatch, desc(iG), desc(Gs)) %>%
+    ungroup()
+
+  save(
+    all_algns, rare_algns, pileup_regions, paired_algns, paired_regions,
+    odn_neg_sets, odn_neg_specimens, odn_neg_algns, odn_neg_summary,
+    pot_mis, num_random_sites, random_sites, gen_loci, gen_loci_summary,
+    file = file.path(out_dir, "manuscript_fig_data.archive.RData")
+  )
+}
+
+```
+
+\newpage
+## Main Figures
+
+### Figure 1. iGUIDE reduces mispriming inherent to GUIDE-seq.
+
+```{r fig1, fig.width=7.5, fig.height=9}
+# Molecular diagram -----------------------------------------------------------
+#knitr::include_graphics(file.path(work_dir, "nobles_fig_v7.pdf"))
+fig1AB <- grImport::readPicture(
+  file.path(work_dir, "analysis/nobles_fig_v7.ps.xml")
+)
+
+fig1AB <- grImport::pictureGrob(fig1AB)
+
+# Mispriming barchart ----------------------------------------------------------
+pot_mis_AB <- pot_mis %>% 
+  filter(
+    gRNA %in% names(sgRNA),
+    dsODN %in% c("Gs", "iG")) %>%    # Selects for low frequecy , n() <= 3 incorporations
+  group_by(dsODN, gRNA, upstream.score) %>%
+  summarise(frg = n()) %>%
+  ungroup()
+
+pot_mis_C <- odn_neg_algns %>%
+  mutate(
+    gRNA = "Composite",
+    dsODN = "No dsODN") %>%
+  group_by(dsODN, gRNA, upstream.score) %>%
+  summarise(frg = sum(contrib)) %>%
+  ungroup()
+
+pot_mis_R <- as.data.frame(random_sites) %>%
+  group_by(upstream.score) %>%
+  summarise(frg = n()) %>%
+  ungroup()
+
+pot_mis_R <- bind_rows(
+  list(
+    "iG" = bind_rows(lapply(sgRNA, function(x) pot_mis_R), .id = "gRNA"),
+    "Gs" = bind_rows(lapply(sgRNA, function(x) pot_mis_R), .id = "gRNA"),
+    "No dsODN" = {pot_mis_R %>% mutate(gRNA = "Composite")}
+  ),
+  .id = "dsODN"
+)
+
+fig1C_data <- bind_rows(
+    list(
+      "Data" = bind_rows(pot_mis_AB, pot_mis_C), 
+      "Random" = pot_mis_R
+    ), 
+    .id = "set"
+  ) %>%
+  group_by(set, dsODN, gRNA) %>%
+  mutate(rel = frg / sum(frg)) %>%
+  ungroup() %>%
+  mutate(
+    dsODN = factor(dsODN, levels = c("Gs", "No dsODN", "iG")),
+    gRNA = factor(gRNA, levels = c(names(sgRNA), "Composite"))) %>%
+  tidyr::complete(
+    set, dsODN, gRNA, upstream.score, fill = list(frg = 0, rel = 0)) %>%
+  mutate(set = factor(set, levels = c("Random", "Data"))) %>%
+  filter(ifelse(dsODN == "No dsODN", gRNA == "Composite", gRNA != "Composite"))
+
+levels(fig1C_data$dsODN) <- c("GUIDE-seq", "No dsODN", "iGUIDE")
+levels(fig1C_data$gRNA) <- c(
+  "B2M", "TRAC", "VEGFA(s2)", "VEGFA(s3)", "Composite")
+
+fig1C_data <- arrange(fig1C_data, dsODN, gRNA) %>%
+  mutate(
+    strip.title = paste0(as.character(dsODN), " - ", as.character(gRNA)),
+    strip.title = factor(strip.title, unique(strip.title))
+  )
+
+fig1C_sig_test <- pot_mis %>% 
+  filter(
+    dsODN %in% c("Gs", "iG"),
+    gRNA %in% names(sgRNA)) %>%
+  group_by(specimen, dsODN, gRNA) %>%
+  summarise(mean.score = mean(upstream.score)) %>%
+  group_by(gRNA) %>%
+  summarise(
+    p.val = t.test(
+      mean.score[dsODN == "Gs"], mean.score[dsODN == "iG"])$p.value) %>%
+  ungroup() %>%
+  mutate(
+    upstream.score = 9, 
+    rel = 0.23, 
+    p.val = p.adjust(p.val),
+    p.val.form = sprintf("%.3f", round(p.val, digits = 3)),
+    label = ifelse(
+      p.val > 0.001, paste0("p-value ", p.val.form), "p-value < 0.001"),
+    gRNA = factor(gRNA, levels = c(names(sgRNA), "Composite")),
+    dsODN = factor("iG", levels = c("Gs", "No dsODN", "iG"))) %>%
+  arrange(gRNA)
+
+levels(fig1C_sig_test$gRNA) <- c(
+  "B2M", "TRAC", "VEGFA(s2)", "VEGFA(s3)", "Composite")
+levels(fig1C_sig_test$dsODN) <- c("GUIDE-seq", "No dsODN", "iGUIDE")
+
+fig1C_sig_test <- arrange(fig1C_sig_test, dsODN, gRNA) %>%
+  mutate(
+    strip.title = paste0(as.character(dsODN), " - ", as.character(gRNA)),
+    strip.title = factor(strip.title, levels(fig1C_data$strip.title)))
+
+fig1C <- ggplot() + 
+  geom_bar(
+    data = fig1C_data, aes(x = upstream.score, y = rel, fill = set), 
+    stat = "identity", position = "dodge") + 
+  geom_text(
+    data = fig1C_sig_test, aes(x = upstream.score, y = rel, label = label),
+    size = 2) +
+  facet_wrap(~ strip.title, nrow = 2) + 
+  scale_fill_manual(values = c("#FBB4AE", "#377EB8")) + #"#FC8D62"
+  scale_x_continuous(breaks = seq(0,12,4)) +
+  scale_y_continuous(breaks = pretty_breaks(n = 3)) +
+  labs(x = "Match to Primer (bp)", 
+       y = "Proportion of Alignments",
+       fill = NULL)
+
+# Coverage example -------------------------------------------------------------
+# Plot coverage of on-target (B2M and TRAC) cleavage and the most prominent off
+# target sites
+
+# Isolate alignments for each target, focus on:
+select_paired_regions <- filter(
+    paired_regions, 
+    RNP == "Cas9", 
+    dsODN == "iG",
+    on.off.target == "On-target") %>%
+  mutate(
+    grp.id = paste0(RNP, ":", gRNA, ":", dsODN, ":", pair.id),
+    gRNA = factor(gRNA, levels = names(sgRNA))) %>%
+  arrange(gRNA)
+
+fig1D_data <- paired_algns %>%
+  mutate(
+    grp.id = paste0(RNP, ":", gRNA, ":", dsODN, ":", pair.id)) %>%
+  filter(grp.id %in% select_paired_regions$grp.id)
+
+# Construct graphs and generate complete figure
+fig1D_data <- bind_rows(
+    lapply(
+      split(fig1D_data, fig1D_data$gRNA), 
+      function(x){
+        calcCoverage(
+          GRanges(x$seqnames, IRanges(x$start, x$end), x$strand), 
+          resolution = 1L) 
+      }
+    ),
+    .id = "gRNA"
+  ) %>%
+  mutate(gRNA = factor(gRNA, levels = names(sgRNA))) %>%
+  arrange(gRNA)
+
+levels(fig1D_data$gRNA) <- c("B2M", "TRAC", "VEGFA(s2)", "VEGFA(s3)")
+  
+# 3"x3"
+fig1D <- mutate(
+    fig1D_data,
+    pos = "pos", neg = "neg",
+    gRNA_seq = paste0(as.character(gRNA), " [", seqnames, "]"),
+    gRNA_seq = factor(gRNA_seq, levels = unique(gRNA_seq))) %>%
+  filter(gRNA == "B2M") %>%
+  ggplot(aes(x = start)) + 
+  geom_bar(
+    aes(y = readCountsPos, fill = pos), 
+    stat = "identity", width = 1L) +
+  geom_bar(
+    aes(y = -readCountsNeg, fill = neg), 
+    stat = "identity", width = 1L) +
+  geom_abline(slope = 0, intercept = 0, color = "grey") +
+  facet_wrap(. ~ gRNA_seq, scales = "free", nrow = 2) +
+  scale_x_continuous(breaks = pretty_breaks(n = 2), labels = scales::comma) +
+  scale_y_continuous(labels = scales::comma) +
+  scale_fill_manual(values = c("#984EA3", "#4DAF4A")) +
+  labs(y = "Unique Alignments", x = "Genomic Position") +
+  theme(
+    axis.text = element_text(size = 8),
+    axis.title = element_text(size = 9, face = "plain"), 
+    strip.text = element_text(size = 9, face = "plain"),
+    legend.position = "none",
+    aspect.ratio = 1)
+
+# Assemeble figure -------------------------------------------------------------
+fig1 <- c(list(fig1AB), list(ggplotGrob(fig1C)), list(ggplotGrob(fig1D)))
+
+fig1_layout <- matrix(c(1, 1, 1, 2, 2, 3), ncol = 1)
+
+grid.arrange(grobs = fig1, layout_matrix = fig1_layout)
+```
+Figure 1. (A & B) Molecular design of GUIDE-seq and iGUIDE. The dsODN is incorporates into DNA breaks. Amplification of flanking DNA, by nested-PCR, produces sequenced copies indistiguishable from genomic mispriming when using the GUIDE-seq design. The modified dsODN of iGUIDE uses a reporter present in sequenced copies to prevent misinterpretation. (C) Alignment of amplification primer and upstream sequence from uniquely identified sites in either GUIDE-seq or iGUIDE samples. (D) Sequence coverage of on-target CRISPR site from iGUIDE samples (gRNA target: B2M).
+
+```{r fig1C, fig.width=3, fig.height=3, include=FALSE}
+fig1C
+```
+
+```{r fig1D, fig.width=3, fig.height=3, include=FALSE}
+fig1D
+```
+
+
+\newpage
+### Figure 2. Sequence of potential off-target sites and Relation of identified DNA breaks with genomic and epigenetic features.
+
+```{r fig2_prep, include=FALSE, eval=FALSE}
+# Generate unique sites in csv format for heatmaps (both rarified and total)
+# Data needs to contain five columns: seqnames, strand, position, sampleName, 
+# and refGenome. The on-target site is being removed, for now, and off-target as
+# well as unmatched are being included. This is from the read level, 
+# unstandardized.
+set.seed(714)
+
+cart_data <- data.table::fread(
+    file.path(work_dir,"analysis/condensed_intsites.csv"), 
+    data.table = FALSE
+  ) %>%
+  filter(timepoint == "d0") %>%
+  mutate(
+    setName = "Lenti",
+    pos = as.numeric(ifelse(strand == "+", start, end))) %>%
+  select(seqnames, strand, pos, setName, posid) %>% 
+  filter(seqnames %in% c(paste0("chr", 1:22), "chrX", "chrY")) %>%
+  mutate(
+    posid = paste0(
+      str_extract(posid, "[\\w]+"), ":", 
+      str_extract(posid, "[+-]"), ":", 
+      str_extract(posid, "[0-9]+$"))) %>%
+  distinct() %>%
+  as.data.frame()
+
+std_data <- all_algns %>%
+  filter(specimen %in% c("GSSP0002", "GSSP0004", paste0("iG", 60:65))) %>%
+  group_by(dsODN, specimen, gRNA, clus.ori) %>%
+  summarise(frags = n(), reads = sum(count)) %>%
+  ungroup() %>%
+  mutate(
+    seqnames = str_extract(clus.ori, "[\\w]+"),
+    strand = str_extract(clus.ori, "[+-]"),
+    pos = as.numeric(str_extract(clus.ori, "[0-9]+$")),
+    setName = dsODN,
+    posid = clus.ori) %>%
+  select(seqnames, strand, pos, setName, posid) %>% 
+  filter(seqnames %in% c(paste0("chr", 1:22), "chrX", "chrY")) %>%
+  distinct() %>%
+  as.data.frame()
+
+std_data <- split(std_data, std_data$setName)
+
+heatmap_list <- list(
+  "Gs" = std_data$Gs,
+  "iG" = std_data$iG,
+  "Lenti" = cart_data)
+
+heatmap_data <- bind_rows(lapply(heatmap_list, function(df){
+    if(nrow(df) == min(sapply(heatmap_list, nrow))){
+      return(df)
+    }else{
+      idx <- sample(
+        seq_len(nrow(df)), min(sapply(heatmap_list, nrow)), replace = FALSE)
+      return(df[idx,])
+    }}), .id = "grp") %>%
+  mutate(sampleName = setName, position = pos, refGenome = "hg38") %>%
+  select(seqnames, strand, position, sampleName, refGenome)
+  
+heatmap_sample_info <- heatmap_data %>%
+  group_by(sampleName) %>%
+  summarise(
+    GTSP = unique(sampleName), 
+    patient = "Mock") %>%
+  ungroup() %>%
+  mutate(sampleName = factor(sampleName, levels = names(heatmap_list))) %>%
+  arrange(sampleName)
+
+write.csv(
+  heatmap_data, file.path(out_dir, "manuscript_heatmap_sites.csv"), 
+  row.names = FALSE, quote = FALSE)
+write.csv(
+  heatmap_sample_info, file.path(out_dir, "manuscript_heatmap_samples.csv"), 
+  row.names = FALSE, quote = FALSE)
+
+```
+
+```{r fig2, fig.width=7, fig.height=8.5}
+# Part A and B -----------------------------------------------------------------
+gen_loci_summary$gRNA <- factor(gen_loci_summary$gRNA, levels = names(sgRNA))
+levels(gen_loci_summary$gRNA) <- c("B2M", "TRAC", "VEGFA(s2)", "VEGFA(s3)")
+gen_loci_summary <- split(gen_loci_summary, gen_loci_summary$gRNA)
+
+top_target_plots <- lapply(
+  gen_loci_summary, 
+  function(x){
+    filter(x, Gs != 0 | iG != 0) %>%
+      head(n = 20) %>%
+      select(seq, mismatch, Gs, iG) %>%
+      seq_diverge_plot(
+        ref = sgRNA[[unique(x$gRNA)]], nuc.col = "seq", text.size = 2, 
+        force.sq = TRUE, padding = 5) +
+      labs(title = unique(x$gRNA))
+  }
+)
+
+# Part C, D, and E -------------------------------------------------------------
+# This section of the analysis uses the Genomic and Epigenetic heatmap makers
+# from the BushmanLab group: https://github.com/BushmanLab/
+# 
+# Genomic HeatmapMaker: https://github.com/BushmanLab/genomicHeatmapMaker
+#   use the 'from_input' branch to generate the roc.res file.
+#   
+# Epigenetic HeatmapMaker: https://github.com/BushmanLab/EpigeneticHeatmapMaker
+#   use the 'from_input' branch to generate the roc.res file.
+
+# system call: /home/opt/R-3.4.0/bin/Rscript ~/dev/scripts/genomicHeatmapMaker/genomic_heatmap_from_file.R manuscript_heatmap_samples.csv -f manuscript_heatmap_sites.csv -o manuscript_genomic_heatmap -r hg38 -c ~/INSPIIRED/INSPIIRED.yml
+
+# system call: /home/opt/R-3.4.0/bin/Rscript ~/dev/scripts/EpigeneticHeatmapMaker/epi_heatmap_from_file.R manuscript_heatmap_samples.csv -f manuscript_heatmap_sites.csv -t ~/dev/scripts/EpigeneticHeatmapMaker/CD4_epi_types.txt -o manuscript_epi_heatmap -c ~/INSPIIRED/INSPIIRED.yml
+
+## Generate genetic heatmap: fig2A ---------------------------------------------
+heatmap_sample_info <- read.csv(
+  file.path(out_dir, "manuscript_heatmap_samples.csv"))
+
+gen_heatmap <- readRDS(
+  file.path(out_dir, "manuscript_genomic_heatmap/roc.res.rds"))
+
+heatmap_scale <- c(0, seq(0.40, 0.60, 0.05), 1)
+
+gen_heatmap_colors <- colorspace::diverge_hsv(
+  length(heatmap_scale), h = c(240, 0), v = 1, power = 1)
+
+select_gen_features <- c(
+  "boundary.dist", "start.dist", "general.width", "gene.width", 
+  "within_refSeq_gene", "refSeq_counts.10k", "refSeq_counts.100k", 
+  "refSeq_counts.1M", "GC.100", "GC.1k", "GC.10k", "GC.100k", "GC.1M", 
+  "CpG_counts.1k", "CpG_counts.10k", "CpG_density.10k", "CpG_density.100k", 
+  "CpG_density.1M", "DNaseI_count.1k", "DNaseI_count.10k", "DNaseI_count.100k", 
+  "DNaseI_count.1M")
+
+gen_heatmap$ROC <- gen_heatmap$ROC[select_gen_features,]
+
+label_heatmap <- as_labeller(c(
+    "Gs" = "GUIDE-seq", "iG" = "iGUIDE", "Lenti" = "Lenti"))
+
+heatmap_sample_levels <- c("Gs", "iG", "Lenti")
+heatmap_figure_labels <- c("GUIDE-seq", "iGUIDE", "Lenti")
+
+stat_cuts <- c(0, 0.001, 0.01, 0.05, 1)
+gen_comp_stats <- structure(cut(
+  gen_heatmap$pvalues$op[select_gen_features, 1], 
+  stat_cuts, 
+  labels = c("***", " **", " * ", "   "), 
+  include.lowest = TRUE),
+  names = select_gen_features)
+gen_row_names <- paste0(names(gen_comp_stats), " - ", gen_comp_stats)
+
+fig2E <- gen_heatmap$ROC %>%
+  reshape2::melt() %>% 
+  mutate(
+    feat = Var1,
+    comp.sym = gen_comp_stats[Var1],
+    Var1 = paste0(Var1, " - ", comp.sym),
+    Var1 = factor(Var1, levels = gen_row_names), 
+    Var2 = factor(Var2, levels = heatmap_sample_levels),
+    grp = " ",
+    sig = as.vector(gen_heatmap$pvalues$np[select_gen_features,]),
+    sym = cut(
+      sig, stat_cuts, labels = c("***", " **", " * ", "   "), 
+      include.lowest = TRUE))
+levels(fig2E$Var2) <- heatmap_figure_labels
+
+fig2E <- ggplot(fig2E, aes(x = Var2, y = Var1, fill = value)) + 
+  geom_tile(color = 'black') +
+  geom_text(aes(label = sym), color = "black", size = 2, nudge_y = -0.15) + 
+  facet_wrap(~ grp, scales = "free") + 
+  scale_x_discrete(position = "top") +
+  scale_fill_gradient2(
+    breaks = heatmap_scale, 
+    low = gen_heatmap_colors[1], 
+    mid = gen_heatmap_colors[round(length(heatmap_scale)/2)], 
+    high = gen_heatmap_colors[length(heatmap_scale)], 
+    midpoint = 0.5) +
+  guides(fill = guide_colorbar(
+    title.position = "top", title.hjust = 0.5, barheight = 10)) +
+  labs(x = NULL, y = NULL, fill = "ROC\nScore") +
+  theme(
+    legend.position = "right",
+    axis.text.x.top = element_text(angle = 90, hjust = 0, vjust = 0.5),
+    strip.placement = "outside",
+    axis.line = element_blank(),
+    axis.ticks.y = element_blank(),
+    aspect.ratio = nrow(gen_heatmap$ROC)/ncol(gen_heatmap$ROC))
+
+## Generate epigenetic heatmaps: fig2B -----------------------------------------
+epi_heatmap <- readRDS(
+  file.path(out_dir, "manuscript_epi_heatmap/roc.res.rds"))
+
+epi_heatmap_colors <- colorspace::diverge_hsv(
+  length(heatmap_scale), h = c(240,120), v = 1, power = 1)
+
+select_epi_features <- c(
+  "CTCF.10Kb", "H2AK5ac.10Kb", "H2AK9ac.10Kb", "H2AZ.10Kb", "H2BK120ac.10Kb", 
+  "H2BK12ac.10Kb", "H2BK20ac.10Kb", "H2BK5ac.10Kb", "H2BK5me1.10Kb", 
+  "H3K14ac.10Kb", "H3K18ac.10Kb", "H3K23ac.10Kb", "H3K27ac.10Kb", 
+  "H3K27me1.10Kb", "H3K27me2.10Kb", "H3K27me3.10Kb", "H3K36ac.10Kb", 
+  "H3K36me1.10Kb", "H3K36me3.10Kb", "H3K4ac.10Kb", "H3K4me1.10Kb", 
+  "H3K4me2.10Kb", "H3K4me3.10Kb", "H3K79me1.10Kb", "H3K79me2.10Kb", 
+  "H3K79me3.10Kb", "H3K9ac.10Kb", "H3K9me1.10Kb", "H3K9me2.10Kb", 
+  "H3K9me3.10Kb", "H3R2me1.10Kb", "H3R2me2.10Kb", "H4K12ac.10Kb", 
+  "H4K16ac.10Kb", "H4K20me1.10Kb", "H4K20me3.10Kb", "H4K5ac.10Kb", 
+  "H4K8ac.10Kb", "H4K91ac.10Kb", "H4R3me2.10Kb", "NRSF.10Kb", "PolII.10Kb")
+
+epi_heatmap$ROC <- epi_heatmap$ROC[select_epi_features,]
+
+epi_comp_stats <- structure(cut(
+  epi_heatmap$pvalues$op[select_epi_features, 1], 
+  stat_cuts, 
+  labels = c("***", " **", " * ", "   "), 
+  include.lowest = TRUE),
+  names = stringr::str_remove(select_epi_features, ".10Kb"))
+epi_row_names <- paste0(names(epi_comp_stats), " - ", epi_comp_stats)
+
+fig2FG <- epi_heatmap$ROC %>%
+  reshape2::melt() %>% 
+  mutate(
+    feat = stringr::str_remove(Var1, ".10Kb"),
+    comp.sym = epi_comp_stats[Var1],
+    Var1 = paste0(stringr::str_remove(Var1, ".10Kb"), " - ", comp.sym),
+    Var1 = factor(Var1, levels = epi_row_names), 
+    Var2 = factor(Var2, levels = heatmap_sample_levels),
+    grp = ifelse(as.integer(Var1) <= length(levels(Var1))/2, " ", "  "),    
+    sig = as.vector(epi_heatmap$pvalues$np[select_epi_features,]),
+    sym = cut(
+      sig, 
+      stat_cuts, 
+      labels = c("***", " **", " * ", "   "), 
+      include.lowest = TRUE))
+levels(fig2FG$Var2) <- heatmap_figure_labels
+
+fig2FG <- ggplot(fig2FG, aes(x = Var2, y = Var1, fill = value)) + 
+  geom_tile(color = 'black') +
+  geom_text(aes(label = sym), color = "black", size = 2, nudge_y = -0.15) + 
+  facet_wrap(~ grp, scales = "free") + 
+  scale_x_discrete(position = "top") +
+  scale_fill_gradient2(
+    breaks = heatmap_scale, 
+    low = epi_heatmap_colors[1], 
+    mid = epi_heatmap_colors[round(length(heatmap_scale)/2)], 
+    high = epi_heatmap_colors[length(heatmap_scale)], 
+    midpoint = 0.5) +
+  guides(fill = guide_colorbar(
+    title.position = "top", title.hjust = 0.5, barheight = 10)) +
+  labs(x = NULL, y = NULL, fill = "ROC\nScore") +
+  theme(
+    legend.position = "right",
+    axis.text.x.top = element_text(angle = 90, hjust = 0, vjust = 0.5),
+    strip.placement = "outside",
+    axis.line = element_blank(),
+    axis.ticks.y = element_blank(),
+    aspect.ratio = nrow(epi_heatmap$ROC)/(2*ncol(epi_heatmap$ROC)))
+
+fig2_layout <- matrix(
+  c(1, 1, 1, 1, 2, 2, 2, 2,
+    3, 3, 3, 3, 4, 4, 4, 4,
+    5, 5, 5, 6, 6, 6, 6, 6,
+    5, 5, 5, 6, 6, 6, 6, 6), ncol = 8, byrow = TRUE)
+
+grid.arrange(
+  grobs = c(top_target_plots, list(fig2E, fig2FG)), layout_matrix = fig2_layout)
+
+```
+Figure 2. (A & B) Sequences of suspected Cas9 edited sites associated with either the B2M or TRAC5 guideRNA. The number of guideRNA mismatches are annotated to the right of the associated sequence, as well as the number of unique alignments, or inferred cells sampled, from GUIDE-seq (Gs) or iGUIDE (iG). Likelihood of (C) genomic and (D & E) epigenetic features hosting incorporation sites. (C) Receiver Operating Characteristic (ROC) curves of GC content (100 bp window) and fragile regions counts (within 1M bp window) near incorporation sites. Samples were not treated with Cas9 nuclease or guide RNAs. Control sites (annotated as "Lenti") are lentiviral integration sites from transduction products of CART19 patients. 
+
+```{r fig2A, fig.width=3.5, fig.height=3, include=FALSE}
+top_target_plots[[1]]
+```
+
+```{r fig2B, fig.width=3.5, fig.height=3, include=FALSE}
+top_target_plots[[2]]
+```
+
+```{r fig2C, fig.width=3.5, fig.height=3, include=FALSE}
+top_target_plots[[3]]
+```
+
+```{r fig2D, fig.width=3.5, fig.height=3, include=FALSE}
+top_target_plots[[4]]
+```
+
+```{r fig2E, fig.width=3, fig.height=5, include=FALSE}
+fig2E
+```
+
+```{r fig2FG, fig.width=4, fig.height=5, include=FALSE}
+fig2FG
+```
+
+\newpage
+## Supporting figures and tables
+
+### Supp. Figure 1. Distribution of Incorporation Sites from On-Target Locations
+
+```{r figS1, fig.height=3.5, fig.width=7}
+# incorporation distribution across Cas9-dependent on-target sites
+figS1_data <- all_algns %>% 
+  filter(
+    edit.site %in% on_target_sites, 
+    RNP == "Cas9", 
+    gRNA %in% names(sgRNA),
+    dsODN %in% c("Gs", "iG")) %>%
+  mutate(
+    gRNA = factor(gRNA, level = names(sgRNA)),
+    dsODN = ifelse(
+      dsODN == "Gs", "GUIDE-seq", "iGUIDE"),
+    pos = ifelse(strand == "+", start, end),
+    dist = pos - as.numeric(str_extract(edit.site, "[0-9]+$"))) %>%
+  select(
+    seqnames, strand, pos, dist, 
+    specimen, edit.site, RNP, gRNA, dsODN) %>%
+  group_by(edit.site, RNP, gRNA, dsODN, seqnames, strand, dist) %>%
+  summarise(cnt = log10(n())) %>%
+  ungroup() %>%
+  filter(cnt != 0, abs(dist) <= 100) %>%
+  mutate(cnt = ifelse(strand == "+", cnt, -cnt))
+
+levels(figS1_data$gRNA) <- c("B2M", "TRAC", "VEGFA(s2)", "VEGFA(s3)")
+
+ggplot(figS1_data, aes(x = dist, y = cnt, fill = strand)) +
+  geom_bar(stat = "identity", width = 1L) + 
+  facet_grid(dsODN ~ gRNA, scales = "free") +
+  coord_cartesian(xlim = c(-100, 100)) +
+    scale_fill_manual(values = c("#984EA3", "#4DAF4A")) +
+  labs(
+    fill = "Strand",
+    y = "Cells Observed (log)", 
+    x = "Incorporation Distance from On-Target Site") +
+  theme(axis.text.x = element_text(angle = 25, hjust = 1, vjust = 1))
+```
+Supporting Figure 1. Distribution of incorporation sites from each gRNA and method-associated dsODN . Cells observed was inferred by unique alignments, displayed on a log-scale. Negtive observations refer to incorporation in the anti-sense orientation.
+
+\newpage
+### Supp. Figure 2. Sequences of Most Probable Off-target Sites for each gRNA
+
+```{r figS2AB, fig.height=9}
+# genomic analysis of gRNA sequences
+potential_target_plots <- lapply(gen_loci_summary, function(x){
+  head(x, n = 100) %>%
+    dplyr::select(seq, count, mismatch, Gs, iG) %>%
+    seq_diverge_plot(
+      ref = sgRNA[[unique(x$gRNA)]], nuc.col = "seq", padding = 6) +
+    labs(title = unique(x$gRNA))
+})
+
+grid.arrange(grobs = potential_target_plots[c(1,2)], nrow = 1)
+```
+Supporting Figure 2AB. Sequences of most probable off-target Cas9 edit sites based on sequence similarity to associated gRNAs (top 100 sites, B2M and TRAC guide RNAs considered here). The number of guideRNA mismatches are annotated to the right of the associated sequence, as well as the number of unique alignments, or inferred cells sampled, from GUIDE-seq (Gs) or iGUIDE (iG).
+
+\newpage
+```{r figS2CD, fig.height=9}
+grid.arrange(grobs = potential_target_plots[c(3,4)], nrow = 1)
+```
+Supporting Figure 2CD. Sequences of most probable off-target Cas9 edit sites based on sequence similarity to associated gRNAs (top 100 sites, VEGFA guide RNAs considered here). The number of guideRNA mismatches are annotated to the right of the associated sequence, as well as the number of unique alignments, or inferred cells sampled, from GUIDE-seq (Gs) or iGUIDE (iG).

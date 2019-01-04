@@ -1,0 +1,2 @@
+seqnames,start,end,width,strand,lociPairKey,readPairKey,sampleName,ID
+chr14,22547664,22547838,175,+,1:1,1:1,UntreatedControl-neg-2,M03249:289:000000000-BDHC9:1:2110:16624:15581
