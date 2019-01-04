@@ -14,6 +14,7 @@ This repository also contains a final processing dataset from the manuscript. An
 
 This repository was successfully executed under the following session:
 
+```
 R version 3.4.0 (2017-04-21)
 Platform: x86_64-pc-linux-gnu (64-bit)
 Running under: Ubuntu 16.04.5 LTS
@@ -71,3 +72,4 @@ loaded via a namespace (and not attached):
 [45] rprojroot_1.3-2                   readr_1.1.1                      
 [47] stringi_1.2.4                     Rcpp_0.12.17                     
 [49] tidyselect_0.2.3                  BSgenome.Hsapiens.UCSC.hg38_1.4.1
+```
