@@ -1,4 +1,4 @@
-# iGUIDE_manuscript_analysis
+# iGUIDE manuscript analysis
 Analysis provided in the "iGUIDE: an improved pipeline for analyzing CRISPR cleavage specificity" manuscript.
 
 For an updated version of iGUIDE, please visit https://github.com/cnobles/iGUIDE.
