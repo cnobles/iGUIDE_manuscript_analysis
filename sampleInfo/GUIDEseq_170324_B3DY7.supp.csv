@@ -1,9 +1,0 @@
-specimen,gRNA,mRNA,dsODN
-sinegRNA,Mock,Cas9,Gs
-sineCas9mRNA_gNYCE,NYCE,Mock,Gs
-sineCas9mRNA_sinegRNA,Mock,Mock,Gs
-gNYCE,NYCE,Cas9,Gs
-gNG,NewGroup,Cas9,Gs
-sineODN_gNYCE,NYCE,Cas9,Mock
-UntreatedControl,Mock,Mock,Mock
-NoTemplateControl,Mock,Mock,Mock

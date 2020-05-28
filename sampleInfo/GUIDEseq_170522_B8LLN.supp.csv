@@ -1,8 +1,0 @@
-specimen,gRNA,RNP,dsODN,TD
-R2C1,NYCE,Cas9,Mock,LV
-R2C3,NYCE,Cas9,Gs,LV
-R2C4,NYCE,Cas9,Gs,Mock
-R2C5,Mock,Mock,Gs,Mock
-R2C6,Mock,Mock,Mock,LV
-UntreatedControl,Mock,Mock,Mock,Mock
-NoTemplateControl,Mock,Mock,Mock,Mock

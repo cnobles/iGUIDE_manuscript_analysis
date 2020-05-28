@@ -1,7 +1,0 @@
-specimen,gRNA,RNP,dsODN
-sineRNP_sineODN,Mock,Mock,Mock
-sineRNP,Mock,Mock,Gs
-sineODN_gNYCE,NYCE,Cas9,Mock
-gNYCE,NYCE,Cas9,Gs
-gNG,NewGroup,Cas9,Gs
-NoTemplateControl,Mock,Mock,Mock
